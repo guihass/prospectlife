@@ -4,22 +4,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { COUNTRIES } from "@/lib/countries";
 import type { Lead, SearchResponse, SiteAudit } from "@/lib/types";
-import type { SenderConfig, SenderProvider } from "@/lib/sender";
 import { prettyPhone } from "@/lib/phone";
+import { DEFAULT_FUNNEL, PLACEHOLDERS, renderTemplate, type FunnelStage } from "@/lib/funnel";
 
 /* ------------------------------------------------------------------ */
 /* Tipos locais                                                        */
 /* ------------------------------------------------------------------ */
 
-type SendStatus = "pendente" | "enviando" | "enviado" | "erro";
-
 interface LeadRow extends Lead {
-  message?: string;
-  followUp?: string;
-  messageSource?: "ia" | "modelo";
-  sendStatus?: SendStatus;
-  sendError?: string;
-  selected?: boolean;
+  stage?: number;          // índice da etapa do funil
+  notes?: string;          // anotações do usuário
+  lastContact?: string;    // ISO date do último contato
+  status?: "ativo" | "ganho" | "perdido";
 }
 
 interface Config {
@@ -33,19 +29,7 @@ interface Config {
   doAudit: boolean;
   senderName: string;
   senderBusiness: string;
-  anthropicKey: string;
-  provider: SenderProvider;
-  cloudToken: string;
-  cloudPhoneNumberId: string;
-  cloudTemplateName: string;
-  cloudTemplateLang: string;
-  evoBaseUrl: string;
-  evoApiKey: string;
-  evoInstance: string;
-  minDelay: number;
-  maxDelay: number;
-  dailyCap: number;
-  testNumber: string;
+  funnel: FunnelStage[];
 }
 
 const DEFAULT_CONFIG: Config = {
@@ -59,24 +43,11 @@ const DEFAULT_CONFIG: Config = {
   doAudit: true,
   senderName: "",
   senderBusiness: "",
-  anthropicKey: "",
-  provider: "evolution",
-  cloudToken: "",
-  cloudPhoneNumberId: "",
-  cloudTemplateName: "",
-  cloudTemplateLang: "pt_BR",
-  evoBaseUrl: "",
-  evoApiKey: "",
-  evoInstance: "",
-  minDelay: 60,
-  maxDelay: 180,
-  dailyCap: 40,
-  testNumber: "",
+  funnel: DEFAULT_FUNNEL,
 };
 
-const LS_CONFIG = "prospectlife.config.v1";
-const LS_LEADS = "prospectlife.leads.v1";
-const LS_DAILY = "prospectlife.daily.v1";
+const LS_CONFIG = "prospectlife.config.v2";
+const LS_LEADS = "prospectlife.leads.v2";
 
 type Tab = "todos" | "none" | "social" | "site";
 
@@ -89,20 +60,6 @@ function splitList(s: string, allowComma = true): string[] {
     .split(allowComma ? /[\n,;]+/ : /[\n;]+/)
     .map((x) => x.trim())
     .filter(Boolean);
-}
-
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    const t = setTimeout(resolve, ms);
-    signal?.addEventListener("abort", () => {
-      clearTimeout(t);
-      resolve();
-    });
-  });
-}
-
-function rand(min: number, max: number): number {
-  return Math.floor(min + Math.random() * (max - min + 1));
 }
 
 async function pool<T>(items: T[], concurrency: number, fn: (item: T, i: number) => Promise<void>) {
@@ -119,23 +76,6 @@ async function pool<T>(items: T[], concurrency: number, fn: (item: T, i: number)
 function todayKey(): string {
   return new Date().toISOString().slice(0, 10);
 }
-function getDailyCount(): number {
-  try {
-    const raw = localStorage.getItem(LS_DAILY);
-    if (!raw) return 0;
-    const { day, count } = JSON.parse(raw) as { day: string; count: number };
-    return day === todayKey() ? count : 0;
-  } catch {
-    return 0;
-  }
-}
-function bumpDaily(): number {
-  const n = getDailyCount() + 1;
-  try {
-    localStorage.setItem(LS_DAILY, JSON.stringify({ day: todayKey(), count: n }));
-  } catch {}
-  return n;
-}
 
 function csvEscape(v: unknown): string {
   const s = v == null ? "" : String(v);
@@ -144,6 +84,12 @@ function csvEscape(v: unknown): string {
 
 function scoreClass(score: number): string {
   return score < 40 ? "score-bad" : score < 70 ? "score-mid" : "score-good";
+}
+
+function fmtDate(iso?: string): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
 }
 
 /* ------------------------------------------------------------------ */
@@ -160,19 +106,19 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [tab, setTab] = useState<Tab>("todos");
+  const [stageFilter, setStageFilter] = useState<number | "all">("all");
   const [open, setOpen] = useState<string | null>(null);
-  const [sending, setSending] = useState(false);
-  const [sendLog, setSendLog] = useState<string[]>([]);
-  const [testResult, setTestResult] = useState<string | null>(null);
-  const [showSender, setShowSender] = useState(false);
+  const [showFunnelEditor, setShowFunnelEditor] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
-  const sendAbortRef = useRef<AbortController | null>(null);
 
-  // Carrega/salva configuração no navegador (nada vai para o servidor)
+  // Carrega/salva tudo no navegador (nada vai para o servidor)
   useEffect(() => {
     try {
       const raw = localStorage.getItem(LS_CONFIG);
-      if (raw) setCfg({ ...DEFAULT_CONFIG, ...(JSON.parse(raw) as Partial<Config>) });
+      if (raw) {
+        const saved = JSON.parse(raw) as Partial<Config>;
+        setCfg({ ...DEFAULT_CONFIG, ...saved, funnel: saved.funnel?.length ? saved.funnel : DEFAULT_FUNNEL });
+      }
       const rawLeads = localStorage.getItem(LS_LEADS);
       if (rawLeads) setLeads(JSON.parse(rawLeads) as LeadRow[]);
     } catch {}
@@ -193,27 +139,9 @@ export default function Home() {
 
   const set = <K extends keyof Config>(k: K, v: Config[K]) => setCfg((c) => ({ ...c, [k]: v }));
   const addLog = useCallback((s: string) => setLog((l) => [...l.slice(-200), `${new Date().toLocaleTimeString()} ${s}`]), []);
-  const addSendLog = useCallback((s: string) => setSendLog((l) => [...l.slice(-200), `${new Date().toLocaleTimeString()} ${s}`]), []);
-
   const updateLead = useCallback((id: string, patch: Partial<LeadRow>) => {
     setLeads((ls) => ls.map((l) => (l.id === id ? { ...l, ...patch } : l)));
   }, []);
-
-  const senderConfig: SenderConfig = useMemo(
-    () => ({
-      provider: cfg.provider,
-      cloudToken: cfg.cloudToken,
-      cloudPhoneNumberId: cfg.cloudPhoneNumberId,
-      cloudTemplateName: cfg.cloudTemplateName,
-      cloudTemplateLang: cfg.cloudTemplateLang,
-      evoBaseUrl: cfg.evoBaseUrl,
-      evoApiKey: cfg.evoApiKey,
-      evoInstance: cfg.evoInstance,
-    }),
-    [cfg]
-  );
-  const senderReady =
-    cfg.provider === "cloud" ? !!(cfg.cloudToken && cfg.cloudPhoneNumberId) : !!(cfg.evoBaseUrl && cfg.evoApiKey && cfg.evoInstance);
 
   /* ---------------- Busca ---------------- */
 
@@ -240,7 +168,7 @@ export default function Home() {
     setProgress({ done: 0, total: combos.length, label: "Buscando empresas…" });
 
     const existingIds = new Set(leads.map((l) => l.id));
-    const existingKeys = new Set(leads.map((l) => (l.phoneE164 || l.name.toLowerCase() + "|" + l.city.toLowerCase())));
+    const existingKeys = new Set(leads.map((l) => l.phoneE164 || l.name.toLowerCase() + "|" + l.city.toLowerCase()));
     const found: LeadRow[] = [];
     const warns: string[] = [];
 
@@ -273,10 +201,10 @@ export default function Home() {
             if (existingIds.has(l.id) || existingKeys.has(key)) continue;
             existingIds.add(l.id);
             existingKeys.add(key);
-            found.push({ ...l, selected: true });
+            found.push({ ...l, stage: 0, status: "ativo" });
             added++;
           }
-          addLog(`  ✓ ${data.totalFound} encontradas, ${added} novas sem site${cfg.includeWithSite ? "/com site" : ""}`);
+          addLog(`  ✓ ${data.totalFound} encontradas, ${added} novas`);
           for (const w of data.warnings) if (!warns.includes(w)) warns.push(w);
         }
       } catch (e) {
@@ -289,7 +217,6 @@ export default function Home() {
     setLeads((ls) => [...found, ...ls]);
     setWarnings(warns);
 
-    // Instagram
     if (cfg.findIg && !ctrl.signal.aborted) {
       const need = found.filter((l) => !l.instagram);
       setProgress({ done: 0, total: need.length, label: "Procurando Instagram…" });
@@ -314,7 +241,6 @@ export default function Home() {
       });
     }
 
-    // Auditoria
     if (cfg.includeWithSite && cfg.doAudit && !ctrl.signal.aborted) {
       const need = found.filter((l) => l.siteType === "site" && l.website);
       setProgress({ done: 0, total: need.length, label: "Auditando sites…" });
@@ -347,123 +273,46 @@ export default function Home() {
 
   const stopSearch = () => abortRef.current?.abort();
 
-  /* ---------------- Mensagens ---------------- */
+  /* ---------------- Funil ---------------- */
 
-  const generateMessage = async (l: LeadRow): Promise<string | null> => {
-    try {
-      const res = await fetch("/api/message", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lead: l, senderName: cfg.senderName, senderBusiness: cfg.senderBusiness, anthropicKey: cfg.anthropicKey }),
-      });
-      const data = (await res.json()) as { text?: string; followUp?: string; source?: "ia" | "modelo"; warning?: string; error?: string };
-      if (data.warning) addLog(data.warning);
-      if (!data.text) return null;
-      updateLead(l.id, { message: data.text, followUp: data.followUp, messageSource: data.source });
-      return data.text;
-    } catch {
-      return null;
-    }
+  const funnel = cfg.funnel;
+  const me = { name: cfg.senderName, business: cfg.senderBusiness };
+
+  const setStage = (i: number, patch: Partial<FunnelStage>) =>
+    set(
+      "funnel",
+      funnel.map((s, idx) => (idx === i ? { ...s, ...patch } : s))
+    );
+  const addStage = () => set("funnel", [...funnel, { id: "etapa_" + Date.now(), name: `${funnel.length + 1}. Nova etapa`, text: "" }]);
+  const removeStage = (i: number) => {
+    if (funnel.length <= 1) return;
+    if (!confirm(`Remover a etapa "${funnel[i].name}"? Leads nessa etapa voltam para a anterior.`)) return;
+    set(
+      "funnel",
+      funnel.filter((_, idx) => idx !== i)
+    );
+    setLeads((ls) => ls.map((l) => ((l.stage ?? 0) >= i && (l.stage ?? 0) > 0 ? { ...l, stage: (l.stage ?? 0) - 1 } : l)));
+  };
+  const moveStage = (i: number, dir: -1 | 1) => {
+    const j = i + dir;
+    if (j < 0 || j >= funnel.length) return;
+    const arr = [...funnel];
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+    set("funnel", arr);
+  };
+  const resetFunnel = () => {
+    if (confirm("Voltar o funil para os textos sugeridos? Suas edições serão perdidas.")) set("funnel", DEFAULT_FUNNEL);
   };
 
-  const generateAll = async () => {
-    const need = visible.filter((l) => !l.message);
-    setProgress({ done: 0, total: need.length, label: "Escrevendo mensagens…" });
-    let done = 0;
-    await pool(need, cfg.anthropicKey ? 2 : 6, async (l) => {
-      await generateMessage(l);
-      done++;
-      setProgress({ done, total: need.length, label: "Escrevendo mensagens…" });
-    });
-  };
-
-  /* ---------------- Envio automático ---------------- */
-
-  const runAutoSend = async () => {
-    if (!senderReady) {
-      setShowSender(true);
-      return;
-    }
-    if (!cfg.senderName.trim()) {
-      setError("Preencha seu nome (é usado nas mensagens) antes de enviar.");
-      return;
-    }
-    const queue = visible.filter((l) => l.selected && l.whatsapp && l.sendStatus !== "enviado");
-    if (!queue.length) {
-      setError("Nenhum lead selecionado com WhatsApp para enviar.");
-      return;
-    }
-    const ctrl = new AbortController();
-    sendAbortRef.current = ctrl;
-    setSending(true);
-    setSendLog([]);
-    addSendLog(`Fila: ${queue.length} mensagens. Pausa de ${cfg.minDelay}–${cfg.maxDelay}s entre cada uma. Mantenha esta aba aberta.`);
-
-    for (const l of queue) {
-      if (ctrl.signal.aborted) break;
-      const daily = getDailyCount();
-      if (daily >= cfg.dailyCap) {
-        addSendLog(`Limite diário de ${cfg.dailyCap} mensagens atingido. Parando por hoje.`);
-        break;
-      }
-      updateLead(l.id, { sendStatus: "enviando" });
-      let text = l.message;
-      if (!text) text = (await generateMessage(l)) ?? undefined;
-      if (!text) {
-        updateLead(l.id, { sendStatus: "erro", sendError: "Não consegui gerar a mensagem" });
-        continue;
-      }
-      try {
-        const res = await fetch("/api/send", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ config: senderConfig, to: l.phoneE164, text, templateParams: [l.name] }),
-          signal: ctrl.signal,
-        });
-        const data = (await res.json()) as { ok: boolean; error?: string };
-        if (data.ok) {
-          const n = bumpDaily();
-          updateLead(l.id, { sendStatus: "enviado", sendError: undefined });
-          addSendLog(`✓ ${l.name} (${prettyPhone(l.phoneE164)}) — ${n}/${cfg.dailyCap} hoje`);
-        } else {
-          updateLead(l.id, { sendStatus: "erro", sendError: data.error });
-          addSendLog(`✗ ${l.name}: ${data.error}`);
-        }
-      } catch (e) {
-        if (ctrl.signal.aborted) break;
-        updateLead(l.id, { sendStatus: "erro", sendError: e instanceof Error ? e.message : "erro" });
-      }
-      const wait = rand(cfg.minDelay, cfg.maxDelay);
-      addSendLog(`  aguardando ${wait}s…`);
-      await sleep(wait * 1000, ctrl.signal);
-    }
-    addSendLog(ctrl.signal.aborted ? "Envio interrompido." : "Fila concluída.");
-    setSending(false);
-    sendAbortRef.current = null;
-  };
-
-  const stopSend = () => sendAbortRef.current?.abort();
-
-  const sendTest = async () => {
-    setTestResult(null);
-    const to = cfg.testNumber.replace(/\D/g, "");
-    if (!to) {
-      setTestResult("Informe seu número com DDI (ex.: 5541999999999).");
-      return;
-    }
-    const res = await fetch("/api/send", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ config: senderConfig, to, text: `Teste do ProspectLife ✅ (${new Date().toLocaleTimeString()})`, templateParams: ["Teste"] }),
-    });
-    const data = (await res.json()) as { ok: boolean; error?: string };
-    setTestResult(data.ok ? "Mensagem de teste enviada! Confira seu WhatsApp." : `Falhou: ${data.error}`);
+  const advance = (l: LeadRow) => {
+    const next = Math.min((l.stage ?? 0) + 1, funnel.length - 1);
+    updateLead(l.id, { stage: next, lastContact: new Date().toISOString() });
   };
 
   /* ---------------- Exportar / limpar ---------------- */
 
   const exportCsv = () => {
-    const header = ["Empresa", "Telefone", "WhatsApp", "Instagram", "Situação do site", "Site", "Nota do site", "Mobile", "Cidade", "Nicho", "Endereço", "Avaliação", "Mensagem", "Status envio", "Fonte", "Google Maps"];
+    const header = ["Empresa", "Telefone", "WhatsApp", "Instagram", "Situação do site", "Site", "Nota do site", "Mobile", "Cidade", "Nicho", "Endereço", "Avaliação", "Etapa do funil", "Status", "Último contato", "Anotações", "Fonte", "Google Maps"];
     const rows = visible.map((l) => [
       l.name,
       prettyPhone(l.phoneE164),
@@ -477,8 +326,10 @@ export default function Home() {
       l.niche,
       l.address,
       l.rating ? `${l.rating} (${l.ratingCount})` : "",
-      l.message ?? "",
-      l.sendStatus ?? "",
+      funnel[l.stage ?? 0]?.name ?? "",
+      l.status ?? "ativo",
+      l.lastContact ? new Date(l.lastContact).toLocaleDateString("pt-BR") : "",
+      l.notes ?? "",
       l.source,
       l.mapsUrl ?? "",
     ]);
@@ -496,7 +347,12 @@ export default function Home() {
 
   /* ---------------- Derivados ---------------- */
 
-  const visible = useMemo(() => (tab === "todos" ? leads : leads.filter((l) => l.siteType === tab)), [leads, tab]);
+  const visible = useMemo(() => {
+    let v = tab === "todos" ? leads : leads.filter((l) => l.siteType === tab);
+    if (stageFilter !== "all") v = v.filter((l) => (l.stage ?? 0) === stageFilter);
+    return v;
+  }, [leads, tab, stageFilter]);
+
   const counts = useMemo(
     () => ({
       todos: leads.length,
@@ -505,33 +361,44 @@ export default function Home() {
       site: leads.filter((l) => l.siteType === "site").length,
       wa: leads.filter((l) => l.whatsapp).length,
       ig: leads.filter((l) => l.instagram).length,
-      sent: leads.filter((l) => l.sendStatus === "enviado").length,
+      ganhos: leads.filter((l) => l.status === "ganho").length,
     }),
     [leads]
   );
-  const selectedCount = visible.filter((l) => l.selected && l.whatsapp && l.sendStatus !== "enviado").length;
-
-  const toggleAll = (v: boolean) => setLeads((ls) => ls.map((l) => (visible.some((x) => x.id === l.id) ? { ...l, selected: v } : l)));
+  const stageCounts = useMemo(() => funnel.map((_, i) => leads.filter((l) => (l.stage ?? 0) === i && l.status !== "perdido").length), [funnel, leads]);
 
   /* ------------------------------------------------------------------ */
 
   return (
     <>
       <section className="hero">
+        <div className="hero-eyebrow">
+          <span className="dot" /> 100% gratuito · sem cadastro · Brasil e mais 60 países
+        </div>
         <h1>
-          Encontre empresas <span>sem site</span> e comece a conversa
+          Encontre empresas <span>sem site</span>
+          <br />e leve cada uma pelo seu funil
         </h1>
         <p>
-          Escolha o país, as cidades e o nicho. O ProspectLife entrega <b>nome, WhatsApp e Instagram</b>, audita sites fracos
-          e escreve uma abordagem curta e humana. Grátis, para você e para quem mais quiser usar.{" "}
-          <Link href="/como-usar">Primeira vez? Leia o guia →</Link>
+          Escolha o país, as cidades e o nicho. O ProspectLife entrega <b>nome, WhatsApp e Instagram</b>, audita sites fracos e organiza
+          a conversa em etapas escritas por você. <Link href="/como-usar">Primeira vez? Leia o guia →</Link>
         </p>
+        <div className="hero-chips">
+          <span className="chip"><i>🔍</i> Busca por cidade + nicho</span>
+          <span className="chip"><i>💬</i> WhatsApp pronto</span>
+          <span className="chip"><i>📸</i> Instagram</span>
+          <span className="chip"><i>🔎</i> Auditoria de site</span>
+          <span className="chip"><i>🪜</i> Funil de vendas</span>
+          <span className="chip"><i>⬇</i> Exporta CSV</span>
+        </div>
       </section>
 
-      {/* ---------------- Formulário de busca ---------------- */}
+      {/* ---------------- 1. Busca ---------------- */}
       <section className="card">
-        <h2>1. O que você quer prospectar?</h2>
-        <p className="hint">Pode colocar várias cidades (uma por linha) e vários nichos (um por linha ou separados por vírgula). O app busca todas as combinações.</p>
+        <h2>
+          <span className="step-num">1</span> O que você quer prospectar?
+        </h2>
+        <p className="hint">Várias cidades (uma por linha) e vários nichos (um por linha ou separados por vírgula). O app busca todas as combinações.</p>
         <div className="grid">
           <div className="field">
             <label>País</label>
@@ -571,7 +438,7 @@ export default function Home() {
             <span>
               <b>Modo Google (recomendado)</b>
               <br />
-              <small className="muted">Usa sua chave da Google Places — mais completo (telefone e site de quase todas).</small>
+              <small className="muted">Usa sua chave da Google Places — telefone e site de quase todas.</small>
             </span>
           </label>
         </div>
@@ -580,7 +447,7 @@ export default function Home() {
             <label>Sua chave da Google Places API</label>
             <input type="password" placeholder="AIza..." value={cfg.googleKey} onChange={(e) => set("googleKey", e.target.value)} autoComplete="off" />
             <small>
-              A chave fica salva só no seu navegador. O Google dá US$ 200/mês grátis (dá para ~5.000 buscas). <Link href="/como-usar#google">Passo a passo para criar a chave →</Link>
+              A chave fica salva só no seu navegador. O Google dá US$ 200/mês grátis (~5.000 buscas). <Link href="/como-usar#google">Passo a passo para criar a chave →</Link>
             </small>
           </div>
         )}
@@ -657,10 +524,15 @@ export default function Home() {
         ))}
       </section>
 
-      {/* ---------------- Abordagem ---------------- */}
+      {/* ---------------- 2. Funil ---------------- */}
       <section className="card">
-        <h2>2. Quem está falando (para as mensagens)</h2>
-        <p className="hint">O agente escreve a primeira mensagem curta, calma e sem pressão — como uma pessoa real. Esses dados entram no texto.</p>
+        <h2>
+          <span className="step-num">2</span> Seu funil de vendas
+        </h2>
+        <p className="hint">
+          Você escreve os textos de cada etapa uma vez. Depois, em cada lead, o botão <b>Abrir WhatsApp</b> já leva o texto da etapa em que ele está,
+          com o nome da empresa e da cidade preenchidos. Os textos abaixo são só uma sugestão — mude tudo do seu jeito.
+        </p>
         <div className="grid">
           <div className="field">
             <label>Seu nome</label>
@@ -670,194 +542,153 @@ export default function Home() {
             <label>Sua empresa (opcional)</label>
             <input type="text" placeholder="Life Web" value={cfg.senderBusiness} onChange={(e) => set("senderBusiness", e.target.value)} />
           </div>
-          <div className="field">
-            <label>Chave da Anthropic (opcional — IA escreve mensagens únicas)</label>
-            <input type="password" placeholder="sk-ant-... (sem isso, usa modelos humanizados grátis)" value={cfg.anthropicKey} onChange={(e) => set("anthropicKey", e.target.value)} autoComplete="off" />
-            <small>
-              Sem chave o app já gera mensagens boas e variadas. Com chave, o Claude personaliza cada uma. <Link href="/como-usar#ia">Como conseguir →</Link>
-            </small>
-          </div>
         </div>
 
-        <h3>Envio automático pelo seu número (opcional)</h3>
-        <p className="hint">
-          Sem configurar nada, você clica em <b>“Abrir WhatsApp”</b> em cada lead e a mensagem já vai pronta — só apertar enviar. Se quiser que o agente envie sozinho,
-          conecte seu número abaixo.{" "}
-          <button className="btn btn-secondary btn-sm" onClick={() => setShowSender((v) => !v)}>
-            {showSender ? "Ocultar configuração" : senderReady ? "✓ Número conectado — editar" : "Conectar meu número"}
+        <div className="pipeline mt">
+          {funnel.map((s, i) => (
+            <button key={s.id} className={`pipe-stage ${stageFilter === i ? "active" : ""}`} onClick={() => setStageFilter(stageFilter === i ? "all" : i)} title="Filtrar leads nesta etapa">
+              <b>{stageCounts[i] ?? 0}</b>
+              <span>{s.name}</span>
+            </button>
+          ))}
+        </div>
+
+        <div className="actions" style={{ marginTop: 14 }}>
+          <button className="btn btn-secondary" onClick={() => setShowFunnelEditor((v) => !v)}>
+            {showFunnelEditor ? "Fechar editor" : "✏️ Editar textos do funil"}
           </button>
-        </p>
-        {showSender && (
-          <div className="card" style={{ marginTop: 8 }}>
-            <div className="radio-row">
-              <label className={cfg.provider === "evolution" ? "active" : ""}>
-                <input type="radio" name="prov" checked={cfg.provider === "evolution"} onChange={() => set("provider", "evolution")} />
-                <span>
-                  <b>Evolution API</b> (seu número normal, via QR Code)
-                  <br />
-                  <small className="muted">Grátis e open-source. Precisa rodar num servidor seu (VPS ou Docker).</small>
-                </span>
-              </label>
-              <label className={cfg.provider === "cloud" ? "active" : ""}>
-                <input type="radio" name="prov" checked={cfg.provider === "cloud"} onChange={() => set("provider", "cloud")} />
-                <span>
-                  <b>WhatsApp Cloud API</b> (Meta, oficial)
-                  <br />
-                  <small className="muted">Exige template aprovado para primeira mensagem. 1.000 conversas/mês grátis.</small>
-                </span>
-              </label>
-            </div>
-            {cfg.provider === "evolution" ? (
-              <div className="grid mt">
-                <div className="field">
-                  <label>URL da Evolution API</label>
-                  <input type="text" placeholder="https://evo.seudominio.com" value={cfg.evoBaseUrl} onChange={(e) => set("evoBaseUrl", e.target.value)} />
-                </div>
-                <div className="field">
-                  <label>API Key (apikey)</label>
-                  <input type="password" value={cfg.evoApiKey} onChange={(e) => set("evoApiKey", e.target.value)} autoComplete="off" />
-                </div>
-                <div className="field">
-                  <label>Nome da instância</label>
-                  <input type="text" placeholder="prospectlife" value={cfg.evoInstance} onChange={(e) => set("evoInstance", e.target.value)} />
-                </div>
-              </div>
-            ) : (
-              <div className="grid mt">
-                <div className="field">
-                  <label>Token permanente</label>
-                  <input type="password" value={cfg.cloudToken} onChange={(e) => set("cloudToken", e.target.value)} autoComplete="off" />
-                </div>
-                <div className="field">
-                  <label>Phone Number ID</label>
-                  <input type="text" value={cfg.cloudPhoneNumberId} onChange={(e) => set("cloudPhoneNumberId", e.target.value)} />
-                </div>
-                <div className="field">
-                  <label>Nome do template aprovado</label>
-                  <input type="text" placeholder="abertura_prospectlife" value={cfg.cloudTemplateName} onChange={(e) => set("cloudTemplateName", e.target.value)} />
-                  <small>Template com {"{{1}}"} = nome da empresa. Sem template, a Meta só permite responder quem te escreveu.</small>
-                </div>
-                <div className="field">
-                  <label>Idioma do template</label>
-                  <input type="text" value={cfg.cloudTemplateLang} onChange={(e) => set("cloudTemplateLang", e.target.value)} />
-                </div>
-              </div>
-            )}
-            <h3>Ritmo humano</h3>
-            <div className="grid">
-              <div className="field">
-                <label>Pausa mínima entre mensagens (segundos)</label>
-                <input type="number" min={20} value={cfg.minDelay} onChange={(e) => set("minDelay", Math.max(20, Number(e.target.value) || 20))} />
-              </div>
-              <div className="field">
-                <label>Pausa máxima (segundos)</label>
-                <input type="number" min={30} value={cfg.maxDelay} onChange={(e) => set("maxDelay", Math.max(cfg.minDelay, Number(e.target.value) || 60))} />
-              </div>
-              <div className="field">
-                <label>Máximo por dia</label>
-                <input type="number" min={1} max={200} value={cfg.dailyCap} onChange={(e) => set("dailyCap", Math.min(200, Math.max(1, Number(e.target.value) || 1)))} />
-                <small>Número novo: comece com 20–30/dia e aumente aos poucos. Hoje: {loaded ? getDailyCount() : 0} enviadas.</small>
-              </div>
-            </div>
-            <div className="row mt">
-              <input type="text" placeholder="Seu número para teste (5541999999999)" value={cfg.testNumber} onChange={(e) => set("testNumber", e.target.value)} style={{ maxWidth: 320 }} />
-              <button className="btn btn-secondary btn-sm" onClick={sendTest} disabled={!senderReady}>
-                Enviar teste para mim
+          {showFunnelEditor && (
+            <>
+              <button className="btn btn-secondary btn-sm" onClick={addStage}>
+                + Nova etapa
               </button>
-              {testResult && <span className="small">{testResult}</span>}
-            </div>
-            <p className="hint mt">
-              <Link href="/como-usar#envio">Guia completo: como conectar Evolution API ou Cloud API →</Link>
+              <button className="btn btn-secondary btn-sm" onClick={resetFunnel}>
+                ↺ Restaurar sugestões
+              </button>
+            </>
+          )}
+        </div>
+
+        {showFunnelEditor && (
+          <div className="card">
+            <p className="hint">
+              Variáveis que você pode usar nos textos (são trocadas automaticamente):{" "}
+              {PLACEHOLDERS.map((p) => (
+                <span key={p.key} className="var-chip" title={p.desc}>
+                  {p.key}
+                </span>
+              ))}
             </p>
+            <div className="stage-list">
+              {funnel.map((s, i) => (
+                <div key={s.id} className="stage-edit">
+                  <div className="row" style={{ justifyContent: "space-between" }}>
+                    <input type="text" value={s.name} onChange={(e) => setStage(i, { name: e.target.value })} style={{ maxWidth: 280, fontWeight: 700 }} />
+                    <div className="row">
+                      <button className="btn btn-secondary btn-sm" onClick={() => moveStage(i, -1)} disabled={i === 0} title="Subir">
+                        ↑
+                      </button>
+                      <button className="btn btn-secondary btn-sm" onClick={() => moveStage(i, 1)} disabled={i === funnel.length - 1} title="Descer">
+                        ↓
+                      </button>
+                      <button className="btn btn-danger btn-sm" onClick={() => removeStage(i)} disabled={funnel.length <= 1}>
+                        Remover
+                      </button>
+                    </div>
+                  </div>
+                  <textarea value={s.text} onChange={(e) => setStage(i, { text: e.target.value })} placeholder="Escreva a mensagem desta etapa…" />
+                  <small className="muted">
+                    Prévia:{" "}
+                    <i>
+                      {renderTemplate(
+                        s.text,
+                        { name: "Pizzaria do Zé", city: "Curitiba", niche: "Pizzaria" } as Lead,
+                        me
+                      ) || "—"}
+                    </i>
+                  </small>
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </section>
 
-      {/* ---------------- Resultados ---------------- */}
+      {/* ---------------- 3. Leads ---------------- */}
       {leads.length > 0 && (
         <section className="card">
-          <h2>3. Leads encontrados</h2>
+          <h2>
+            <span className="step-num">3</span> Leads encontrados
+          </h2>
           <div className="stats">
             <div className="stat">
-              <b>{counts.todos}</b>
-              <span>empresas</span>
+              <span className="stat-icon">🏪</span>
+              <div>
+                <b>{counts.todos}</b>
+                <span>empresas</span>
+              </div>
             </div>
             <div className="stat">
-              <b>{counts.none + counts.social}</b>
-              <span>sem site</span>
+              <span className="stat-icon orange">🚫</span>
+              <div>
+                <b>{counts.none + counts.social}</b>
+                <span>sem site</span>
+              </div>
             </div>
             <div className="stat">
-              <b>{counts.wa}</b>
-              <span>com WhatsApp</span>
+              <span className="stat-icon green">💬</span>
+              <div>
+                <b>{counts.wa}</b>
+                <span>com WhatsApp</span>
+              </div>
             </div>
             <div className="stat">
-              <b>{counts.ig}</b>
-              <span>com Instagram</span>
+              <span className="stat-icon pink">📸</span>
+              <div>
+                <b>{counts.ig}</b>
+                <span>com Instagram</span>
+              </div>
             </div>
             <div className="stat">
-              <b>{counts.sent}</b>
-              <span>mensagens enviadas</span>
+              <span className="stat-icon green">🏆</span>
+              <div>
+                <b>{counts.ganhos}</b>
+                <span>fechados</span>
+              </div>
             </div>
           </div>
 
-          <div className="tabs">
-            {(
-              [
-                ["todos", `Todos (${counts.todos})`],
-                ["none", `Sem site nenhum (${counts.none})`],
-                ["social", `Só Instagram/Facebook (${counts.social})`],
-                ["site", `Com site — auditados (${counts.site})`],
-              ] as [Tab, string][]
-            ).map(([k, label]) => (
-              <button key={k} className={`tab ${tab === k ? "active" : ""}`} onClick={() => setTab(k)}>
-                {label}
-              </button>
-            ))}
-          </div>
-
-          <div className="actions">
-            <button className="btn btn-secondary" onClick={generateAll} disabled={running}>
-              ✍️ Escrever mensagens para todos ({visible.filter((l) => !l.message).length} faltando)
-            </button>
-            {!sending ? (
-              <button className="btn btn-primary" onClick={runAutoSend} disabled={running || selectedCount === 0}>
-                🤖 Enviar automaticamente ({selectedCount} selecionados)
-              </button>
-            ) : (
-              <button className="btn btn-danger" onClick={stopSend}>
-                ■ Parar envio
-              </button>
-            )}
-            <button className="btn btn-secondary btn-sm" onClick={() => toggleAll(true)}>
-              Selecionar todos
-            </button>
-            <button className="btn btn-secondary btn-sm" onClick={() => toggleAll(false)}>
-              Desmarcar todos
-            </button>
-          </div>
-          {!senderReady && (
-            <div className="alert alert-info">
-              Envio automático desligado: conecte seu número na seção 2 ou use o botão <b>Abrir WhatsApp</b> em cada lead (mensagem já vai pronta).
-            </div>
-          )}
-          {sendLog.length > 0 && (
-            <div className="log">
-              {sendLog.map((l, i) => (
-                <div key={i}>{l}</div>
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-end" }}>
+            <div className="tabs">
+              {(
+                [
+                  ["todos", `Todos (${counts.todos})`],
+                  ["none", `Sem site (${counts.none})`],
+                  ["social", `Só Instagram/Facebook (${counts.social})`],
+                  ["site", `Com site — auditados (${counts.site})`],
+                ] as [Tab, string][]
+              ).map(([k, label]) => (
+                <button key={k} className={`tab ${tab === k ? "active" : ""}`} onClick={() => setTab(k)}>
+                  {label}
+                </button>
               ))}
             </div>
-          )}
+            {stageFilter !== "all" && (
+              <button className="btn btn-secondary btn-sm" onClick={() => setStageFilter("all")}>
+                ✕ Filtro: {funnel[stageFilter]?.name}
+              </button>
+            )}
+          </div>
 
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th></th>
                   <th>Empresa</th>
                   <th>WhatsApp</th>
                   <th>Instagram</th>
                   <th>Site</th>
-                  <th>Mensagem</th>
+                  <th>Etapa do funil</th>
                   <th>Ações</th>
                 </tr>
               </thead>
@@ -866,18 +697,20 @@ export default function Home() {
                   <LeadRowView
                     key={l.id}
                     lead={l}
+                    funnel={funnel}
+                    me={me}
                     open={open === l.id}
                     onToggle={() => setOpen(open === l.id ? null : l.id)}
-                    onSelect={(v) => updateLead(l.id, { selected: v })}
-                    onGenerate={() => generateMessage(l)}
-                    onEditMessage={(m) => updateLead(l.id, { message: m })}
+                    onChange={(patch) => updateLead(l.id, patch)}
+                    onAdvance={() => advance(l)}
                   />
                 ))}
               </tbody>
             </table>
+            {visible.length === 0 && <p className="hint" style={{ padding: 16 }}>Nenhum lead com esse filtro.</p>}
           </div>
           <p className="hint mt">
-            Os leads ficam salvos no seu navegador. Exporte em CSV para abrir no Excel/Google Sheets. Respeite quem pedir para não receber mais mensagens.
+            Os leads e o funil ficam salvos no seu navegador. Exporte em CSV para abrir no Excel/Google Sheets. Respeite quem pedir para não receber mais mensagens.
           </p>
         </section>
       )}
@@ -891,34 +724,36 @@ export default function Home() {
 
 function LeadRowView({
   lead: l,
+  funnel,
+  me,
   open,
   onToggle,
-  onSelect,
-  onGenerate,
-  onEditMessage,
+  onChange,
+  onAdvance,
 }: {
   lead: LeadRow;
+  funnel: FunnelStage[];
+  me: { name: string; business: string };
   open: boolean;
   onToggle: () => void;
-  onSelect: (v: boolean) => void;
-  onGenerate: () => Promise<string | null>;
-  onEditMessage: (m: string) => void;
+  onChange: (patch: Partial<LeadRow>) => void;
+  onAdvance: () => void;
 }) {
-  const [busy, setBusy] = useState(false);
-  const waLink = l.whatsapp && l.message ? `${l.whatsapp}?text=${encodeURIComponent(l.message)}` : l.whatsapp;
+  const stageIdx = Math.min(l.stage ?? 0, funnel.length - 1);
+  const stage = funnel[stageIdx];
+  const text = stage ? renderTemplate(stage.text, l, me) : "";
+  const waLink = l.whatsapp ? (text ? `${l.whatsapp}?text=${encodeURIComponent(text)}` : l.whatsapp) : null;
+  const isLast = stageIdx >= funnel.length - 1;
 
-  const gen = async () => {
-    setBusy(true);
-    await onGenerate();
-    setBusy(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {}
   };
 
   return (
     <>
-      <tr>
-        <td>
-          <input type="checkbox" checked={!!l.selected} onChange={(e) => onSelect(e.target.checked)} disabled={!l.whatsapp} title={l.whatsapp ? "Incluir no envio automático" : "Sem WhatsApp"} />
-        </td>
+      <tr className={l.status === "perdido" ? "row-lost" : l.status === "ganho" ? "row-won" : ""}>
         <td>
           <b>{l.name}</b>
           <span className="sub">
@@ -933,18 +768,7 @@ function LeadRowView({
           )}
         </td>
         <td>
-          {l.phoneE164 ? (
-            <>
-              <span>{prettyPhone(l.phoneE164)}</span>
-              {l.sendStatus && (
-                <span className={`badge ${l.sendStatus === "enviado" ? "badge-sent" : l.sendStatus === "erro" ? "badge-none" : "badge-site"}`} style={{ marginLeft: 6 }} title={l.sendError}>
-                  {l.sendStatus}
-                </span>
-              )}
-            </>
-          ) : (
-            <span className="muted">{l.phoneRaw ? `sem WhatsApp (${l.phoneRaw})` : "não informado"}</span>
-          )}
+          {l.phoneE164 ? <span>{prettyPhone(l.phoneE164)}</span> : <span className="muted">{l.phoneRaw ? `sem WhatsApp (${l.phoneRaw})` : "não informado"}</span>}
         </td>
         <td>
           {l.instagram ? (
@@ -963,13 +787,10 @@ function LeadRowView({
             <>
               <span className="badge badge-site">Tem site</span>
               {l.audit && (
-                <div className="mt" style={{ marginTop: 4 }}>
+                <div style={{ marginTop: 6 }}>
                   <span className={`score ${scoreClass(l.audit.score)}`}>{l.audit.score}/100</span>
                   <span className="sub">mobile: {l.audit.mobile.verdict}</span>
                   <span className="sub">{l.audit.issues.length} problemas</span>
-                  <button className="btn btn-secondary btn-sm" style={{ marginTop: 4 }} onClick={onToggle}>
-                    {open ? "Fechar" : "Ver auditoria"}
-                  </button>
                 </div>
               )}
               {l.website && (
@@ -980,41 +801,76 @@ function LeadRowView({
             </>
           )}
         </td>
-        <td style={{ minWidth: 260 }}>
-          {l.message ? (
-            <textarea value={l.message} onChange={(e) => onEditMessage(e.target.value)} style={{ minHeight: 90, fontSize: "0.88rem" }} />
-          ) : (
-            <span className="muted small">ainda não escrita</span>
-          )}
-          {l.messageSource && <span className="sub">{l.messageSource === "ia" ? "escrita pela IA" : "modelo humanizado"} — pode editar</span>}
+        <td style={{ minWidth: 200 }}>
+          <select value={stageIdx} onChange={(e) => onChange({ stage: Number(e.target.value) })} style={{ padding: "7px 30px 7px 10px", fontSize: "0.88rem" }}>
+            {funnel.map((s, i) => (
+              <option key={s.id} value={i}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+          <div className="row" style={{ marginTop: 6, gap: 6 }}>
+            <select value={l.status ?? "ativo"} onChange={(e) => onChange({ status: e.target.value as LeadRow["status"] })} style={{ padding: "5px 26px 5px 8px", fontSize: "0.8rem", width: "auto" }}>
+              <option value="ativo">Em andamento</option>
+              <option value="ganho">🏆 Fechado</option>
+              <option value="perdido">Perdido</option>
+            </select>
+            {l.lastContact && <span className="sub" style={{ marginTop: 0 }}>último contato {fmtDate(l.lastContact)}</span>}
+          </div>
         </td>
         <td>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <button className="btn btn-secondary btn-sm" onClick={gen} disabled={busy}>
-              {busy ? "…" : l.message ? "↻ Reescrever" : "✍️ Escrever"}
-            </button>
-            {waLink && (
-              <a className="btn btn-wa btn-sm" href={waLink} target="_blank" rel="noreferrer">
+            {waLink ? (
+              <a className="btn btn-wa btn-sm" href={waLink} target="_blank" rel="noreferrer" onClick={() => onChange({ lastContact: new Date().toISOString() })}>
                 💬 Abrir WhatsApp
               </a>
+            ) : (
+              <button className="btn btn-secondary btn-sm" onClick={copy} title="Copiar texto da etapa">
+                📋 Copiar texto
+              </button>
             )}
             {l.instagramUrl && (
               <a className="btn btn-ig btn-sm" href={l.instagramUrl} target="_blank" rel="noreferrer">
                 📸 Instagram
               </a>
             )}
+            <button className="btn btn-secondary btn-sm" onClick={onAdvance} disabled={isLast} title="Marcar contato feito e ir para a próxima etapa">
+              ➜ Próxima etapa
+            </button>
+            <button className="btn btn-secondary btn-sm" onClick={onToggle}>
+              {open ? "Fechar" : "Detalhes"}
+            </button>
           </div>
         </td>
       </tr>
-      {open && l.audit && (
-        <tr>
-          <td colSpan={7}>
-            <AuditView audit={l.audit} />
-            {l.followUp && (
-              <details className="mt">
-                <summary>Sugestão de 2ª mensagem (se responderem)</summary>
-                <div className="msg-box mt">{l.followUp}</div>
-              </details>
+      {open && (
+        <tr className="row-details">
+          <td colSpan={6}>
+            <div className="grid" style={{ gridTemplateColumns: "1.2fr 1fr" }}>
+              <div>
+                <h3 style={{ marginTop: 0 }}>Mensagem desta etapa ({stage?.name})</h3>
+                <div className="msg-box">{text || "Esta etapa está sem texto. Edite o funil na seção 2."}</div>
+                <div className="row mt">
+                  <button className="btn btn-secondary btn-sm" onClick={copy}>
+                    📋 Copiar
+                  </button>
+                  {waLink && (
+                    <a className="btn btn-wa btn-sm" href={waLink} target="_blank" rel="noreferrer" onClick={() => onChange({ lastContact: new Date().toISOString() })}>
+                      💬 Abrir WhatsApp com este texto
+                    </a>
+                  )}
+                </div>
+              </div>
+              <div>
+                <h3 style={{ marginTop: 0 }}>Anotações</h3>
+                <textarea value={l.notes ?? ""} onChange={(e) => onChange({ notes: e.target.value })} placeholder="Ex.: falei com a Ana, dona. Pediu pra chamar sexta." style={{ minHeight: 110 }} />
+              </div>
+            </div>
+            {l.audit && (
+              <div className="mt">
+                <h3>Auditoria do site</h3>
+                <AuditView audit={l.audit} />
+              </div>
             )}
           </td>
         </tr>
@@ -1049,11 +905,7 @@ function AuditView({ audit }: { audit: SiteAudit }) {
           <p className="pitch">💬 Como falar: “{i.pitch}”</p>
         </div>
       ))}
-      {audit.positives.length > 0 && (
-        <p className="small muted mt">
-          Pontos positivos: {audit.positives.join(" · ")}
-        </p>
-      )}
+      {audit.positives.length > 0 && <p className="small muted mt">Pontos positivos: {audit.positives.join(" · ")}</p>}
     </div>
   );
 }

@@ -34,10 +34,7 @@ export default function ComoUsar() {
             problemas de <b>visualização no celular</b>, com nota de 0 a 100 e uma frase pronta para você usar na abordagem.
           </li>
           <li>
-            <b>Escreve a primeira mensagem</b> de WhatsApp de um jeito humano: curta, calma, sem pressão, terminando com uma pergunta simples.
-          </li>
-          <li>
-            Opcionalmente, <b>envia as mensagens sozinho</b> pelo seu número, com pausas aleatórias e limite diário, para parecer uma pessoa e não um robô.
+            Organiza a conversa num <b>funil de vendas</b> com etapas e textos escritos por você (com sugestões prontas), preenchendo nome da empresa, cidade e nicho automaticamente.
           </li>
           <li>Exporta tudo em <b>CSV</b> (abre no Excel / Google Sheets).</li>
         </ul>
@@ -65,10 +62,10 @@ export default function ComoUsar() {
             Clique em <b>Buscar leads</b>. Acompanhe o progresso. Os resultados aparecem na seção 3.
           </li>
           <li>
-            Preencha <b>seu nome</b> na seção 2 e clique em <b>Escrever mensagens para todos</b>.
+            Na seção 2, preencha <b>seu nome</b> e edite os textos do <b>funil de vendas</b> (ou use as sugestões).
           </li>
           <li>
-            Para cada lead, clique em <b>Abrir WhatsApp</b> — a mensagem já vai pronta, é só apertar enviar. Ou conecte seu número e use o <b>envio automático</b>.
+            Para cada lead, clique em <b>Abrir WhatsApp</b> — o texto da etapa atual já vai preenchido, é só revisar e enviar. Conforme a conversa avança, clique em <b>Próxima etapa</b>.
           </li>
         </ol>
       </div>
@@ -177,87 +174,43 @@ export default function ComoUsar() {
         </p>
       </div>
 
-      <div className="card" id="ia">
-        <h2>As mensagens: por que são curtas e calmas?</h2>
+      <div className="card" id="funil">
+        <h2>O funil de vendas: você escreve, o app preenche</h2>
         <p>
-          Ninguém gosta de receber um textão de vendas de um desconhecido. A primeira mensagem do ProspectLife só <b>abre a conversa</b>: cumprimenta, diz quem
-          é, cita algo verdadeiro da empresa e termina com uma pergunta fácil. Exemplo:
+          Na seção 2 da página inicial você monta o seu <b>funil</b>: uma sequência de etapas (Abertura, Conexão, Apresentação, Proposta, Follow-up…) e o
+          texto que você manda em cada uma. O ProspectLife já vem com textos sugeridos — curtos, calmos e sem pressão — mas a ideia é que você escreva
+          do seu jeito.
         </p>
+        <h3>Como funciona no dia a dia</h3>
+        <ol className="steps">
+          <li>Preencha <b>seu nome</b> e, se quiser, <b>sua empresa</b> — eles entram nos textos.</li>
+          <li>Clique em <b>Editar textos do funil</b> e escreva a mensagem de cada etapa. Pode criar, renomear, reordenar e remover etapas.</li>
+          <li>
+            Use variáveis entre chaves para personalizar automaticamente: <code>{"{empresa}"}</code>, <code>{"{cidade}"}</code>, <code>{"{nicho}"}</code>,{" "}
+            <code>{"{meu_nome}"}</code>, <code>{"{minha_empresa}"}</code>, <code>{"{saudacao}"}</code> (Bom dia/tarde/noite), <code>{"{problema_site}"}</code> e{" "}
+            <code>{"{nota_site}"}</code> (para quem tem site auditado).
+          </li>
+          <li>
+            Todo lead novo começa na primeira etapa. Clique em <b>Abrir WhatsApp</b>: o WhatsApp abre com o texto daquela etapa já preenchido — você lê, ajusta se
+            quiser e aperta enviar.
+          </li>
+          <li>
+            Quando a pessoa responder e a conversa evoluir, clique em <b>Próxima etapa</b> (ou escolha a etapa no menu). O próximo “Abrir WhatsApp” já usa o
+            texto da etapa nova.
+          </li>
+          <li>
+            Marque o lead como <b>Fechado</b> ou <b>Perdido</b>, escreva <b>anotações</b> em “Detalhes” e use os contadores do funil para ver quantos leads
+            estão em cada etapa. Clique num contador para filtrar.
+          </li>
+        </ol>
+        <h3>Dica de texto</h3>
         <div className="msg-box">
           Boa tarde! Tudo bem? 😊 Aqui é Guilherme. Vi a Pizzaria do Zé no Google e achei o trabalho de vocês bem bacana. Posso te fazer uma pergunta rápida?
         </div>
         <p className="mt">
-          Quando a pessoa responde, aí sim você explica o que faz (o app sugere uma 2ª mensagem em “Ver auditoria” ou no CSV). Você pode editar qualquer texto
-          antes de enviar.
+          Primeira mensagem curta, humana, terminando com uma pergunta fácil. Ninguém responde textão de vendas de desconhecido. O “pitch” só vem na 3ª ou 4ª
+          etapa, depois que a pessoa já respondeu.
         </p>
-        <h3>IA opcional (Anthropic)</h3>
-        <p>
-          Sem chave nenhuma, o app já usa modelos humanizados com variações aleatórias. Se você quiser que cada mensagem seja <b>única e personalizada</b>, crie uma
-          chave em{" "}
-          <a href="https://console.anthropic.com/" target="_blank" rel="noreferrer">
-            console.anthropic.com
-          </a>{" "}
-          (API Keys → Create Key) e cole no campo da seção 2. Cada mensagem custa fração de centavo. A chave fica só no seu navegador.
-        </p>
-      </div>
-
-      <div className="card" id="envio">
-        <h2>Envio automático pelo seu número</h2>
-        <p>
-          O jeito mais simples e seguro é o <b>semi-automático</b>: clicar em “Abrir WhatsApp” em cada lead — a mensagem já vai pronta. Se você quer que o agente
-          envie sozinho, precisa conectar seu número por um destes caminhos:
-        </p>
-        <h3>Opção A — Evolution API (seu número normal, grátis)</h3>
-        <p>
-          A Evolution API é um programa open-source que “lê” o QR Code do seu WhatsApp (igual ao WhatsApp Web) e permite enviar mensagens por comando. Ela precisa
-          rodar num servidor seu 24h — uma VPS barata (Hostinger, Contabo, Oracle Cloud grátis) com Docker resolve.
-        </p>
-        <ol className="steps">
-          <li>
-            Instale seguindo a documentação oficial:{" "}
-            <a href="https://doc.evolution-api.com/" target="_blank" rel="noreferrer">
-              doc.evolution-api.com
-            </a>{" "}
-            (há vídeos no YouTube: pesquise “instalar Evolution API docker”).
-          </li>
-          <li>
-            Crie uma instância (ex.: <code>prospectlife</code>) e leia o QR Code com o WhatsApp do número que vai enviar.
-          </li>
-          <li>
-            No ProspectLife, seção 2 → “Conectar meu número” → Evolution API. Preencha a URL (ex.: <code>https://evo.seudominio.com</code>), a <code>apikey</code>{" "}
-            global e o nome da instância.
-          </li>
-          <li>Clique em “Enviar teste para mim” para confirmar.</li>
-        </ol>
-        <div className="alert alert-warn">
-          Atenção: enviar muitas mensagens para desconhecidos com um número comum pode gerar <b>bloqueio pelo WhatsApp</b>. Use um número dedicado (chip novo,
-          preferencialmente WhatsApp Business), comece com 20–30 mensagens por dia, mantenha as pausas longas e responda quem te responder. O ProspectLife já
-          coloca pausas aleatórias e limite diário, mas a responsabilidade é sua.
-        </div>
-        <h3>Opção B — WhatsApp Cloud API (Meta, oficial)</h3>
-        <p>
-          É o caminho oficial da Meta: 1.000 conversas por mês grátis e sem risco de banimento. A diferença: para <b>iniciar</b> conversa com quem nunca te escreveu,
-          a Meta exige que a mensagem seja um <b>template aprovado</b>. Ou seja, você cadastra um texto (com <code>{"{{1}}"}</code> no lugar do nome da empresa),
-          a Meta aprova em algumas horas, e o ProspectLife envia esse template.
-        </p>
-        <ol className="steps">
-          <li>
-            Crie um app em{" "}
-            <a href="https://developers.facebook.com/" target="_blank" rel="noreferrer">
-              developers.facebook.com
-            </a>{" "}
-            → tipo “Business” → adicione o produto <b>WhatsApp</b>.
-          </li>
-          <li>
-            Em WhatsApp → Configuração da API, adicione seu número e pegue o <b>Phone Number ID</b>. Gere um <b>token permanente</b> (System User no Business
-            Manager).
-          </li>
-          <li>
-            Em WhatsApp Manager → Modelos de mensagem, crie um template categoria <b>Marketing</b>, idioma <b>pt_BR</b>, com um texto curto e humano, por exemplo:{" "}
-            <i>“Olá! Aqui é o Guilherme. Vi a {"{{1}}"} no Google e queria te fazer uma pergunta rápida, pode ser?”</i>
-          </li>
-          <li>No ProspectLife, escolha “WhatsApp Cloud API” e preencha token, Phone Number ID e o nome do template.</li>
-        </ol>
       </div>
 
       <div className="card">
@@ -271,7 +224,7 @@ export default function ComoUsar() {
             respeite pedidos de exclusão.
           </li>
           <li>
-            <b>WhatsApp:</b> spam pode bloquear seu número. Volume baixo, pausas longas, número dedicado.
+            <b>WhatsApp:</b> mandar mensagem demais para desconhecidos pode bloquear seu número. Volume baixo e conversa de verdade.
           </li>
           <li>
             <b>Confira antes de mandar:</b> Instagram com “confiança média” pode ser de outra empresa com nome parecido.
@@ -282,9 +235,9 @@ export default function ComoUsar() {
       <div className="card">
         <h2>Perguntas frequentes</h2>
         <h3>É grátis mesmo?</h3>
-        <p>Sim. O ProspectLife é gratuito e de código aberto. Os únicos custos possíveis são de terceiros, se você optar: Google (grátis até US$ 200/mês), Anthropic (centavos) e um servidor para a Evolution API.</p>
+        <p>Sim. O ProspectLife é gratuito e de código aberto. O único custo possível é do Google, se você optar pelo modo Google — e ele dá US$ 200/mês grátis.</p>
         <h3>Meus dados ficam salvos onde?</h3>
-        <p>Só no seu navegador (localStorage). Chaves, leads e mensagens nunca são gravados no servidor do ProspectLife. Se limpar o navegador, some.</p>
+        <p>Só no seu navegador (localStorage). Chave, leads, funil e anotações nunca são gravados no servidor do ProspectLife. Se limpar o navegador, some — exporte o CSV de vez em quando.</p>
         <h3>Posso usar em outro país?</h3>
         <p>Sim. Escolha o país na lista; o app pesquisa no idioma local e monta os números de WhatsApp com o DDI correto.</p>
         <h3>A busca travou / deu erro</h3>
@@ -298,8 +251,7 @@ export default function ComoUsar() {
           <a href="https://github.com/guihass/prospectlife" target="_blank" rel="noreferrer">
             GitHub
           </a>
-          . Clique em “Deploy to Vercel” no README ou rode <code>npm install && npm run dev</code>. Você pode definir <code>GOOGLE_PLACES_API_KEY</code> e{" "}
-          <code>ANTHROPIC_API_KEY</code> como variáveis de ambiente para não precisar digitar as chaves.
+          . Clique em “Deploy to Vercel” no README ou rode <code>npm install && npm run dev</code>. Você pode definir <code>GOOGLE_PLACES_API_KEY</code> como variável de ambiente para não precisar digitar a chave.
         </p>
       </div>
 

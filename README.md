@@ -1,6 +1,6 @@
 # ProspectLife 🟢
 
-**IA gratuita de prospecção**: encontra empresas **sem site** nas cidades e nichos que você escolher (Brasil ou qualquer país), entrega **nome, WhatsApp e Instagram**, audita sites fracos (inconsistências + problemas no celular) e escreve a **primeira mensagem** de forma curta, calma e humana — podendo enviar automaticamente pelo seu número.
+**Ferramenta gratuita de prospecção**: encontra empresas **sem site** nas cidades e nichos que você escolher (Brasil ou qualquer país), entrega **nome, WhatsApp e Instagram**, audita sites fracos (inconsistências + problemas no celular) e organiza a conversa num **funil de vendas** com textos escritos por você.
 
 Feito para ser usado por qualquer pessoa, de graça: agências, freelancers, vendedores de sites, tráfego, design, etc.
 
@@ -17,8 +17,7 @@ Feito para ser usado por qualquer pessoa, de graça: agências, freelancers, ven
 | 💬 **WhatsApp pronto** | Normaliza o telefone com o DDI do país e gera o link `wa.me`. |
 | 📸 **Instagram** | Pega do cadastro ou pesquisa em buscadores públicos, com nível de confiança. |
 | 🔎 **Auditoria de site** | Para quem já tem site: HTTPS, viewport/mobile, título, description, "em construção", rodapé antigo, construtor gratuito, botão de WhatsApp, performance… Nota 0–100 + frase pronta para cada problema. |
-| ✍️ **Mensagem humana** | Abertura curta e calma, com variações. Opcional: Claude (Anthropic) escreve uma mensagem única por empresa. |
-| 🤖 **Envio automático** | Via Evolution API (seu número por QR Code) ou WhatsApp Cloud API (Meta). Pausas aleatórias + limite diário. |
+| 🪜 **Funil de vendas** | Etapas (Abertura → Conexão → Apresentação → Proposta → Follow-up) com textos seus, variáveis `{empresa}`, `{cidade}`, `{nicho}`, `{saudacao}`… "Abrir WhatsApp" leva o texto da etapa atual já preenchido. Status, anotações e contadores por etapa. |
 | ⬇ **Exporta CSV** | Abre no Excel / Google Sheets. |
 
 Guia completo dentro do app: **/como-usar**.
@@ -46,7 +45,6 @@ Se você hospedar sua própria cópia e não quiser que os usuários digitem cha
 | Variável | Para quê |
 |---|---|
 | `GOOGLE_PLACES_API_KEY` | Chave da Places API (New) usada quando o usuário não informa a dele. |
-| `ANTHROPIC_API_KEY` | Chave da Anthropic para a IA escrever mensagens. |
 
 ## Estrutura
 
@@ -57,18 +55,16 @@ app/
   api/search          # busca de empresas (Google ou OSM)
   api/instagram       # descoberta de Instagram
   api/audit           # auditoria de site
-  api/message         # geração da mensagem (modelo ou IA)
-  api/send            # envio de WhatsApp (Evolution / Cloud API)
 lib/
   google.ts  osm.ts  phone.ts  social.ts  instagram.ts
-  audit.ts   messages.ts  ai.ts  sender.ts  countries.ts  types.ts
+  audit.ts   funnel.ts  countries.ts  types.ts
 ```
 
 ## Privacidade e responsabilidade
 
-- Nada é gravado no servidor: chaves, leads e mensagens ficam no `localStorage` do navegador do usuário.
+- Nada é gravado no servidor: chave, leads, funil e anotações ficam no `localStorage` do navegador do usuário.
 - Os dados de empresas vêm de cadastros públicos (Google / OpenStreetMap). Use para contato comercial B2B, respeite a LGPD e pedidos de exclusão.
-- Envio em massa pode bloquear seu número no WhatsApp. Use número dedicado, volume baixo e pausas longas. A responsabilidade pelo uso é sua.
+- Mensagens em excesso para desconhecidos podem bloquear seu número no WhatsApp. Volume baixo e conversa de verdade. A responsabilidade pelo uso é sua.
 
 ## Licença
 
