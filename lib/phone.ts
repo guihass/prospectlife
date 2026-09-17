@@ -49,6 +49,22 @@ export function normalizePhone(raw: string | null | undefined, dial: string): Ph
   };
 }
 
+/**
+ * Heurística gratuita: no Brasil, celulares têm 9 dígitos após o DDD e começam com 9.
+ * Celular quase sempre tem WhatsApp; fixo só se for WhatsApp Business.
+ */
+export function phoneType(e164: string | null, dial: string): "celular" | "fixo" | "outro" | null {
+  if (!e164) return null;
+  const d = e164.replace(/\D/g, "");
+  if (dial === "55" && d.startsWith("55")) {
+    const local = d.slice(4);
+    if (local.length === 9 && local.startsWith("9")) return "celular";
+    if (local.length === 8 && /^[2-5]/.test(local)) return "fixo";
+    return "outro";
+  }
+  return "outro";
+}
+
 /** Formata para exibição amigável */
 export function prettyPhone(e164: string | null): string {
   if (!e164) return "";

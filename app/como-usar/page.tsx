@@ -128,6 +128,64 @@ export default function ComoUsar() {
         </p>
       </div>
 
+      <div className="card" id="verificar">
+        <h2>Verificar se o número tem WhatsApp</h2>
+        <p>
+          <b>Não existe consulta pública do WhatsApp.</b> A Meta não oferece um jeito gratuito de perguntar “esse número tem conta?”. A única forma confiável é
+          perguntar ao próprio WhatsApp usando <b>um número seu conectado</b>. O ProspectLife suporta dois caminhos:
+        </p>
+        <h3>Sem configurar nada (pista gratuita)</h3>
+        <p>
+          O app classifica cada telefone como <b>celular</b> ou <b>fixo</b>. No Brasil, celular (9 dígitos começando com 9) quase sempre tem WhatsApp; fixo só tem se
+          a empresa usa WhatsApp Business. Use o filtro <b>“Só celulares”</b> na lista de leads para priorizar.
+        </p>
+        <h3>Opção A — Evolution API (grátis, servidor seu)</h3>
+        <p>
+          A Evolution API é um programa open-source que “lê” o QR Code do seu WhatsApp (igual ao WhatsApp Web) e permite consultar, por comando, se números
+          existem no WhatsApp — 50 de uma vez. Precisa rodar num servidor seu 24h: uma VPS barata (Hostinger, Contabo, Oracle Cloud grátis) com Docker resolve.
+        </p>
+        <ol className="steps">
+          <li>
+            Instale seguindo a documentação oficial:{" "}
+            <a href="https://doc.evolution-api.com/" target="_blank" rel="noreferrer">
+              doc.evolution-api.com
+            </a>{" "}
+            (no YouTube, pesquise “instalar Evolution API docker”).
+          </li>
+          <li>
+            Crie uma instância (ex.: <code>prospectlife</code>) e leia o QR Code com o WhatsApp do número que vai usar. Recomendo um <b>chip dedicado</b>, não o seu
+            pessoal.
+          </li>
+          <li>
+            No ProspectLife, marque <b>“Verificar se o número tem WhatsApp”</b> → <b>Configurar</b> → Evolution API. Preencha a URL (ex.:{" "}
+            <code>https://evo.seudominio.com</code>), a <code>apikey</code> global e o nome da instância.
+          </li>
+          <li>Digite seu número e clique em <b>Testar conexão</b>. Se aparecer “Conexão OK”, está pronto.</li>
+        </ol>
+        <h3>Opção B — Z-API (pago, sem servidor)</h3>
+        <p>
+          Serviço brasileiro: você cria conta em{" "}
+          <a href="https://z-api.io/" target="_blank" rel="noreferrer">
+            z-api.io
+          </a>
+          , conecta o WhatsApp pelo QR Code no painel deles e pronto — não precisa de servidor. Custa a partir de ~R$100/mês.
+        </p>
+        <ol className="steps">
+          <li>No painel da Z-API, copie o <b>ID da instância</b>, o <b>Token</b> e, em Segurança, o <b>Client-Token</b> da conta.</li>
+          <li>No ProspectLife, escolha Z-API, cole os três e clique em <b>Testar conexão</b>.</li>
+        </ol>
+        <h3>Como funciona depois de configurado</h3>
+        <ul>
+          <li>Com a opção marcada, toda busca verifica os números automaticamente antes de mostrar.</li>
+          <li>Leads já na lista: clique em <b>Verificar agora</b> no aviso da seção 3.</li>
+          <li>
+            Números <b>confirmados</b> ganham o selo “WhatsApp ✓”. Números <b>sem WhatsApp</b> aparecem riscados e perdem o botão “Abrir WhatsApp” — use o filtro
+            “Só WhatsApp confirmado” para ver só os bons.
+          </li>
+          <li>A verificação não envia nada para a empresa — é uma consulta silenciosa.</li>
+        </ul>
+      </div>
+
       <div className="card">
         <h2>Como o Instagram é descoberto?</h2>
         <ul>
@@ -203,6 +261,13 @@ export default function ComoUsar() {
             estão em cada etapa. Clique num contador para filtrar.
           </li>
         </ol>
+        <h3>Outros países: mensagens no idioma deles</h3>
+        <p>
+          O funil é <b>por idioma</b>. Quando você escolhe um país, o app usa o funil daquele idioma — já vêm sugestões em <b>português, espanhol, inglês,
+          francês, italiano e alemão</b>, e a saudação ({"{saudacao}"}) é traduzida em mais de 20 idiomas. Cada lead guarda o país/idioma de onde veio, então
+          uma lista misturada (Brasil + Argentina + EUA) manda cada um no idioma certo. Para editar outro idioma, use o seletor <b>“Idioma”</b> ao lado de “Editar
+          textos do funil”. Para idiomas sem sugestão (japonês, árabe…), o app mostra o funil em inglês para você traduzir.
+        </p>
         <h3>Dica de texto</h3>
         <div className="msg-box">
           Boa tarde! Tudo bem? 😊 Aqui é Guilherme. Vi a Pizzaria do Zé no Google e achei o trabalho de vocês bem bacana. Posso te fazer uma pergunta rápida?

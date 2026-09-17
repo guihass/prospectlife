@@ -2,10 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { COUNTRIES } from "@/lib/countries";
+import { COUNTRIES, getCountry } from "@/lib/countries";
 import type { Lead, SearchResponse, SiteAudit } from "@/lib/types";
-import { prettyPhone } from "@/lib/phone";
-import { DEFAULT_FUNNEL, PLACEHOLDERS, renderTemplate, type FunnelStage } from "@/lib/funnel";
+import { prettyPhone, phoneType } from "@/lib/phone";
+import { DEFAULT_FUNNELS, LANG_NAMES, PLACEHOLDERS, baseLang, funnelFor, renderTemplate, type FunnelStage, type Funnels } from "@/lib/funnel";
+import { verifyReady, type VerifyConfig, type VerifyProvider } from "@/lib/verify";
 
 /* ------------------------------------------------------------------ */
 /* Tipos locais                                                        */
@@ -29,7 +30,17 @@ interface Config {
   doAudit: boolean;
   senderName: string;
   senderBusiness: string;
-  funnel: FunnelStage[];
+  funnels: Funnels;        // um funil por idioma (só os editados pelo usuário)
+  // verificação de WhatsApp
+  verify: boolean;
+  verifyProvider: VerifyProvider;
+  evoBaseUrl: string;
+  evoApiKey: string;
+  evoInstance: string;
+  zapiInstanceId: string;
+  zapiToken: string;
+  zapiClientToken: string;
+  testNumber: string;
 }
 
 const DEFAULT_CONFIG: Config = {
@@ -43,13 +54,23 @@ const DEFAULT_CONFIG: Config = {
   doAudit: true,
   senderName: "",
   senderBusiness: "",
-  funnel: DEFAULT_FUNNEL,
+  funnels: {},
+  verify: false,
+  verifyProvider: "evolution",
+  evoBaseUrl: "",
+  evoApiKey: "",
+  evoInstance: "",
+  zapiInstanceId: "",
+  zapiToken: "",
+  zapiClientToken: "",
+  testNumber: "",
 };
 
-const LS_CONFIG = "prospectlife.config.v2";
+const LS_CONFIG = "prospectlife.config.v3";
 const LS_LEADS = "prospectlife.leads.v2";
 
 type Tab = "todos" | "none" | "social" | "site";
+type WaFilter = "todos" | "confirmado" | "celular" | "com_numero";
 
 /* ------------------------------------------------------------------ */
 /* Utilidades                                                          */
@@ -107,6 +128,10 @@ export default function Home() {
   const [warnings, setWarnings] = useState<string[]>([]);
   const [tab, setTab] = useState<Tab>("todos");
   const [stageFilter, setStageFilter] = useState<number | "all">("all");
+  const [waFilter, setWaFilter] = useState<WaFilter>("todos");
+  const [showVerify, setShowVerify] = useState(false);
+  const [verifying, setVerifying] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
   const [showFunnelEditor, setShowFunnelEditor] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -117,10 +142,22 @@ export default function Home() {
       const raw = localStorage.getItem(LS_CONFIG);
       if (raw) {
         const saved = JSON.parse(raw) as Partial<Config>;
-        setCfg({ ...DEFAULT_CONFIG, ...saved, funnel: saved.funnel?.length ? saved.funnel : DEFAULT_FUNNEL });
+        setCfg({ ...DEFAULT_CONFIG, ...saved, funnels: saved.funnels ?? {} });
       }
       const rawLeads = localStorage.getItem(LS_LEADS);
-      if (rawLeads) setLeads(JSON.parse(rawLeads) as LeadRow[]);
+      if (rawLeads) {
+        // Leads salvos por versoes antigas podem nao ter os campos de verificacao
+        const parsed = JSON.parse(rawLeads) as LeadRow[];
+        setLeads(
+          parsed.map((l) => ({
+            ...l,
+            waStatus: l.waStatus ?? "nao_verificado",
+            phoneType: l.phoneType ?? phoneType(l.phoneE164, "55"),
+            countryCode: l.countryCode ?? "BR",
+            lang: l.lang ?? "pt-BR",
+          }))
+        );
+      }
     } catch {}
     setLoaded(true);
   }, []);
@@ -142,6 +179,86 @@ export default function Home() {
   const updateLead = useCallback((id: string, patch: Partial<LeadRow>) => {
     setLeads((ls) => ls.map((l) => (l.id === id ? { ...l, ...patch } : l)));
   }, []);
+
+  const verifyConfig: VerifyConfig = useMemo(
+    () => ({
+      provider: cfg.verifyProvider,
+      evoBaseUrl: cfg.evoBaseUrl,
+      evoApiKey: cfg.evoApiKey,
+      evoInstance: cfg.evoInstance,
+      zapiInstanceId: cfg.zapiInstanceId,
+      zapiToken: cfg.zapiToken,
+      zapiClientToken: cfg.zapiClientToken,
+    }),
+    [cfg]
+  );
+  const canVerify = verifyReady(verifyConfig);
+
+  /* ---------------- Verificação de WhatsApp ---------------- */
+
+  const verifyLeads = useCallback(
+    async (targets: LeadRow[], signal?: AbortSignal) => {
+      const need = targets.filter((l) => l.phoneE164 && l.waStatus !== "confirmado");
+      if (!need.length) return;
+      setVerifying(true);
+      setProgress({ done: 0, total: need.length, label: "Verificando WhatsApp…" });
+      let done = 0;
+      const batch = cfg.verifyProvider === "evolution" ? 50 : 10;
+      for (let i = 0; i < need.length; i += batch) {
+        if (signal?.aborted) break;
+        const chunk = need.slice(i, i + batch);
+        try {
+          const res = await fetch("/api/verify", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ config: verifyConfig, numbers: chunk.map((l) => l.phoneE164) }),
+            signal,
+          });
+          const data = (await res.json()) as { results: { number: string; exists: boolean }[]; error?: string | null };
+          if (data.error) {
+            addLog(`  ✗ verificação: ${data.error}`);
+            if (!data.results?.length) break;
+          }
+          for (const l of chunk) {
+            const digits = (l.phoneE164 || "").replace(/\D/g, "");
+            const r = data.results?.find((x) => x.number === digits);
+            if (r) updateLead(l.id, { waStatus: r.exists ? "confirmado" : "nao_tem" });
+          }
+          const ok = data.results?.filter((r) => r.exists).length ?? 0;
+          addLog(`  ✓ ${chunk.length} números verificados: ${ok} têm WhatsApp`);
+        } catch (e) {
+          if (signal?.aborted) break;
+          addLog(`  ✗ verificação: ${e instanceof Error ? e.message : "erro"}`);
+        }
+        done += chunk.length;
+        setProgress({ done, total: need.length, label: "Verificando WhatsApp…" });
+      }
+      setVerifying(false);
+    },
+    [cfg.verifyProvider, verifyConfig, addLog, updateLead]
+  );
+
+  const testVerify = async () => {
+    setTestResult(null);
+    const to = cfg.testNumber.replace(/\D/g, "");
+    if (!to) {
+      setTestResult("Digite seu número com DDI (ex.: 5541999999999).");
+      return;
+    }
+    setTestResult("Verificando…");
+    try {
+      const res = await fetch("/api/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: verifyConfig, numbers: [to] }),
+      });
+      const data = (await res.json()) as { results: { exists: boolean }[]; error?: string | null };
+      if (data.error) setTestResult("Falhou: " + data.error);
+      else setTestResult(data.results[0]?.exists ? "✅ Conexão OK — esse número tem WhatsApp." : "Conexão OK, mas o WhatsApp diz que esse número não tem conta.");
+    } catch (e) {
+      setTestResult("Falhou: " + (e instanceof Error ? e.message : "erro"));
+    }
+  };
 
   /* ---------------- Busca ---------------- */
 
@@ -217,6 +334,13 @@ export default function Home() {
     setLeads((ls) => [...found, ...ls]);
     setWarnings(warns);
 
+    if (cfg.verify && canVerify && !ctrl.signal.aborted) {
+      await verifyLeads(found, ctrl.signal);
+    } else if (cfg.verify && !canVerify) {
+      warns.push("Verificação de WhatsApp ligada, mas nenhum provedor configurado. Clique em 'Configurar' na opção de verificação.");
+      setWarnings([...warns]);
+    }
+
     if (cfg.findIg && !ctrl.signal.aborted) {
       const need = found.filter((l) => !l.instagram);
       setProgress({ done: 0, total: need.length, label: "Procurando Instagram…" });
@@ -275,47 +399,53 @@ export default function Home() {
 
   /* ---------------- Funil ---------------- */
 
-  const funnel = cfg.funnel;
   const me = { name: cfg.senderName, business: cfg.senderBusiness };
+  const countryLang = getCountry(cfg.countryCode).lang;          // idioma do país selecionado
+  const [editLang, setEditLang] = useState<string | null>(null);  // idioma sendo editado (null = o do país)
+  const activeLang = baseLang(editLang ?? countryLang);
+  const funnel = funnelFor(cfg.funnels, activeLang);               // funil mostrado/editado
+  const hasTranslation = !!DEFAULT_FUNNELS[activeLang];
+  const langLabel = LANG_NAMES[activeLang] ?? activeLang.toUpperCase();
+  const isCustom = !!cfg.funnels[activeLang]?.length;
 
-  const setStage = (i: number, patch: Partial<FunnelStage>) =>
-    set(
-      "funnel",
-      funnel.map((s, idx) => (idx === i ? { ...s, ...patch } : s))
-    );
-  const addStage = () => set("funnel", [...funnel, { id: "etapa_" + Date.now(), name: `${funnel.length + 1}. Nova etapa`, text: "" }]);
+  const saveFunnel = (stages: FunnelStage[]) => set("funnels", { ...cfg.funnels, [activeLang]: stages });
+  const setStage = (i: number, patch: Partial<FunnelStage>) => saveFunnel(funnel.map((s, idx) => (idx === i ? { ...s, ...patch } : s)));
+  const addStage = () => saveFunnel([...funnel, { id: "etapa_" + Date.now(), name: `${funnel.length + 1}. Nova etapa`, text: "" }]);
   const removeStage = (i: number) => {
     if (funnel.length <= 1) return;
     if (!confirm(`Remover a etapa "${funnel[i].name}"? Leads nessa etapa voltam para a anterior.`)) return;
-    set(
-      "funnel",
-      funnel.filter((_, idx) => idx !== i)
-    );
-    setLeads((ls) => ls.map((l) => ((l.stage ?? 0) >= i && (l.stage ?? 0) > 0 ? { ...l, stage: (l.stage ?? 0) - 1 } : l)));
+    saveFunnel(funnel.filter((_, idx) => idx !== i));
+    setLeads((ls) => ls.map((l) => (baseLang(l.lang) === activeLang && (l.stage ?? 0) >= i && (l.stage ?? 0) > 0 ? { ...l, stage: (l.stage ?? 0) - 1 } : l)));
   };
   const moveStage = (i: number, dir: -1 | 1) => {
     const j = i + dir;
     if (j < 0 || j >= funnel.length) return;
     const arr = [...funnel];
     [arr[i], arr[j]] = [arr[j], arr[i]];
-    set("funnel", arr);
+    saveFunnel(arr);
   };
   const resetFunnel = () => {
-    if (confirm("Voltar o funil para os textos sugeridos? Suas edições serão perdidas.")) set("funnel", DEFAULT_FUNNEL);
+    if (!confirm(`Voltar o funil em ${langLabel} para os textos sugeridos? Suas edições nesse idioma serão perdidas.`)) return;
+    const next = { ...cfg.funnels };
+    delete next[activeLang];
+    set("funnels", next);
   };
+  const funnelOf = (l: LeadRow) => funnelFor(cfg.funnels, l.lang || "pt-BR");
 
   const advance = (l: LeadRow) => {
-    const next = Math.min((l.stage ?? 0) + 1, funnel.length - 1);
+    const next = Math.min((l.stage ?? 0) + 1, funnelOf(l).length - 1);
     updateLead(l.id, { stage: next, lastContact: new Date().toISOString() });
   };
 
   /* ---------------- Exportar / limpar ---------------- */
 
   const exportCsv = () => {
-    const header = ["Empresa", "Telefone", "WhatsApp", "Instagram", "Situação do site", "Site", "Nota do site", "Mobile", "Cidade", "Nicho", "Endereço", "Avaliação", "Etapa do funil", "Status", "Último contato", "Anotações", "Fonte", "Google Maps"];
+    const header = ["Empresa", "Telefone", "Tipo", "WhatsApp verificado", "WhatsApp", "Instagram", "Situação do site", "Site", "Nota do site", "Mobile", "Cidade", "Nicho", "Endereço", "Avaliação", "Etapa do funil", "Status", "Último contato", "Anotações", "Fonte", "Google Maps"];
     const rows = visible.map((l) => [
       l.name,
       prettyPhone(l.phoneE164),
+      l.phoneType ?? "",
+      l.waStatus === "confirmado" ? "Sim" : l.waStatus === "nao_tem" ? "Não" : "Não verificado",
       l.whatsapp ?? "",
       l.instagram ? "@" + l.instagram : "",
       l.siteType === "none" ? "Sem site" : l.siteType === "social" ? "Só rede social" : "Tem site",
@@ -326,7 +456,7 @@ export default function Home() {
       l.niche,
       l.address,
       l.rating ? `${l.rating} (${l.ratingCount})` : "",
-      funnel[l.stage ?? 0]?.name ?? "",
+      funnelOf(l)[l.stage ?? 0]?.name ?? "",
       l.status ?? "ativo",
       l.lastContact ? new Date(l.lastContact).toLocaleDateString("pt-BR") : "",
       l.notes ?? "",
@@ -350,8 +480,11 @@ export default function Home() {
   const visible = useMemo(() => {
     let v = tab === "todos" ? leads : leads.filter((l) => l.siteType === tab);
     if (stageFilter !== "all") v = v.filter((l) => (l.stage ?? 0) === stageFilter);
+    if (waFilter === "confirmado") v = v.filter((l) => l.waStatus === "confirmado");
+    else if (waFilter === "celular") v = v.filter((l) => l.phoneType === "celular" && l.waStatus !== "nao_tem");
+    else if (waFilter === "com_numero") v = v.filter((l) => l.phoneE164 && l.waStatus !== "nao_tem");
     return v;
-  }, [leads, tab, stageFilter]);
+  }, [leads, tab, stageFilter, waFilter]);
 
   const counts = useMemo(
     () => ({
@@ -359,13 +492,19 @@ export default function Home() {
       none: leads.filter((l) => l.siteType === "none").length,
       social: leads.filter((l) => l.siteType === "social").length,
       site: leads.filter((l) => l.siteType === "site").length,
-      wa: leads.filter((l) => l.whatsapp).length,
+      wa: leads.filter((l) => l.whatsapp && l.waStatus !== "nao_tem").length,
+      waOk: leads.filter((l) => l.waStatus === "confirmado").length,
+      waNo: leads.filter((l) => l.waStatus === "nao_tem").length,
+      celular: leads.filter((l) => l.phoneType === "celular" && l.waStatus !== "nao_tem").length,
+      unverified: leads.filter((l) => l.phoneE164 && l.waStatus === "nao_verificado").length,
       ig: leads.filter((l) => l.instagram).length,
       ganhos: leads.filter((l) => l.status === "ganho").length,
     }),
     [leads]
   );
   const stageCounts = useMemo(() => funnel.map((_, i) => leads.filter((l) => (l.stage ?? 0) === i && l.status !== "perdido").length), [funnel, leads]);
+  const langsInUse = useMemo(() => Array.from(new Set(leads.map((l) => baseLang(l.lang || "pt-BR")))), [leads]);
+  const editableLangs = useMemo(() => Array.from(new Set([baseLang(countryLang), ...Object.keys(DEFAULT_FUNNELS), ...Object.keys(cfg.funnels), ...langsInUse])), [countryLang, cfg.funnels, langsInUse]);
 
   /* ------------------------------------------------------------------ */
 
@@ -474,6 +613,81 @@ export default function Home() {
           </label>
         )}
 
+        <label className="check">
+          <input type="checkbox" checked={cfg.verify} onChange={(e) => set("verify", e.target.checked)} />
+          <span>
+            <b>Verificar se o número tem WhatsApp</b> antes de mostrar{" "}
+            <span className="muted small">(precisa conectar um número seu — {canVerify ? "✓ conectado" : "não configurado"})</span>{" "}
+            <button className="btn btn-secondary btn-sm" onClick={() => setShowVerify((v) => !v)} type="button">
+              {showVerify ? "Ocultar" : "Configurar"}
+            </button>
+          </span>
+        </label>
+        {showVerify && (
+          <div className="card">
+            <p className="hint">
+              O WhatsApp não tem consulta pública. Para saber se um número tem conta, o app pergunta ao WhatsApp usando <b>um número seu conectado</b>. Sem isso, o app
+              usa o tipo do número (celular / fixo) como pista gratuita. <Link href="/como-usar#verificar">Como configurar →</Link>
+            </p>
+            <div className="radio-row">
+              <label className={cfg.verifyProvider === "evolution" ? "active" : ""}>
+                <input type="radio" name="vprov" checked={cfg.verifyProvider === "evolution"} onChange={() => set("verifyProvider", "evolution")} />
+                <span>
+                  <b>Evolution API</b> (grátis, servidor seu)
+                  <br />
+                  <small className="muted">Open-source. Lê o QR Code do seu WhatsApp. Verifica 50 números por vez.</small>
+                </span>
+              </label>
+              <label className={cfg.verifyProvider === "zapi" ? "active" : ""}>
+                <input type="radio" name="vprov" checked={cfg.verifyProvider === "zapi"} onChange={() => set("verifyProvider", "zapi")} />
+                <span>
+                  <b>Z-API</b> (serviço pago, sem servidor)
+                  <br />
+                  <small className="muted">Cadastro em z-api.io, conecta pelo QR Code. Plano a partir de ~R$100/mês.</small>
+                </span>
+              </label>
+            </div>
+            {cfg.verifyProvider === "evolution" ? (
+              <div className="grid mt">
+                <div className="field">
+                  <label>URL da Evolution API</label>
+                  <input type="text" placeholder="https://evo.seudominio.com" value={cfg.evoBaseUrl} onChange={(e) => set("evoBaseUrl", e.target.value)} />
+                </div>
+                <div className="field">
+                  <label>API Key (apikey)</label>
+                  <input type="password" value={cfg.evoApiKey} onChange={(e) => set("evoApiKey", e.target.value)} autoComplete="off" />
+                </div>
+                <div className="field">
+                  <label>Nome da instância</label>
+                  <input type="text" placeholder="prospectlife" value={cfg.evoInstance} onChange={(e) => set("evoInstance", e.target.value)} />
+                </div>
+              </div>
+            ) : (
+              <div className="grid mt">
+                <div className="field">
+                  <label>Instance ID</label>
+                  <input type="text" value={cfg.zapiInstanceId} onChange={(e) => set("zapiInstanceId", e.target.value)} />
+                </div>
+                <div className="field">
+                  <label>Token da instância</label>
+                  <input type="password" value={cfg.zapiToken} onChange={(e) => set("zapiToken", e.target.value)} autoComplete="off" />
+                </div>
+                <div className="field">
+                  <label>Client-Token (segurança da conta)</label>
+                  <input type="password" value={cfg.zapiClientToken} onChange={(e) => set("zapiClientToken", e.target.value)} autoComplete="off" />
+                </div>
+              </div>
+            )}
+            <div className="row mt">
+              <input type="text" placeholder="Seu número para teste (5541999999999)" value={cfg.testNumber} onChange={(e) => set("testNumber", e.target.value)} style={{ maxWidth: 320 }} />
+              <button className="btn btn-secondary btn-sm" onClick={testVerify} disabled={!canVerify} type="button">
+                Testar conexão
+              </button>
+              {testResult && <span className="small">{testResult}</span>}
+            </div>
+          </div>
+        )}
+
         <div className="actions">
           {!running ? (
             <button className="btn btn-primary" onClick={runSearch}>
@@ -530,8 +744,9 @@ export default function Home() {
           <span className="step-num">2</span> Seu funil de vendas
         </h2>
         <p className="hint">
-          Você escreve os textos de cada etapa uma vez. Depois, em cada lead, o botão <b>Abrir WhatsApp</b> já leva o texto da etapa em que ele está,
-          com o nome da empresa e da cidade preenchidos. Os textos abaixo são só uma sugestão — mude tudo do seu jeito.
+          Você escreve os textos de cada etapa uma vez, por idioma. Em cada lead, o botão <b>Abrir WhatsApp</b> leva o texto da etapa em que ele está, <b>no idioma
+          do país dele</b>, com nome da empresa e cidade preenchidos. Os textos sugeridos existem em português, espanhol, inglês, francês, italiano e alemão —
+          mude tudo do seu jeito.
         </p>
         <div className="grid">
           <div className="field">
@@ -555,8 +770,20 @@ export default function Home() {
 
         <div className="actions" style={{ marginTop: 14 }}>
           <button className="btn btn-secondary" onClick={() => setShowFunnelEditor((v) => !v)}>
-            {showFunnelEditor ? "Fechar editor" : "✏️ Editar textos do funil"}
+            {showFunnelEditor ? "Fechar editor" : `✏️ Editar textos do funil (${langLabel})`}
           </button>
+          <span className="row" style={{ gap: 6 }}>
+            <span className="small muted">Idioma:</span>
+            <select value={activeLang} onChange={(e) => setEditLang(e.target.value)} style={{ width: "auto", padding: "7px 30px 7px 10px", fontSize: "0.88rem" }}>
+              {editableLangs.map((l) => (
+                <option key={l} value={l}>
+                  {LANG_NAMES[l] ?? l.toUpperCase()}
+                  {l === baseLang(countryLang) ? " (país selecionado)" : ""}
+                  {cfg.funnels[l]?.length ? " ✎" : ""}
+                </option>
+              ))}
+            </select>
+          </span>
           {showFunnelEditor && (
             <>
               <button className="btn btn-secondary btn-sm" onClick={addStage}>
@@ -571,8 +798,13 @@ export default function Home() {
 
         {showFunnelEditor && (
           <div className="card">
+            {!hasTranslation && !isCustom && (
+              <div className="alert alert-warn" style={{ marginTop: 0 }}>
+                Ainda não há sugestão de textos em {langLabel}. Estou mostrando o funil em inglês — traduza e salve, e ele passa a valer para esse idioma.
+              </div>
+            )}
             <p className="hint">
-              Variáveis que você pode usar nos textos (são trocadas automaticamente):{" "}
+              Editando o funil em <b>{langLabel}</b>{isCustom ? " (personalizado)" : " (sugestão)"}. Variáveis que você pode usar (trocadas automaticamente):{" "}
               {PLACEHOLDERS.map((p) => (
                 <span key={p.key} className="var-chip" title={p.desc}>
                   {p.key}
@@ -600,11 +832,7 @@ export default function Home() {
                   <small className="muted">
                     Prévia:{" "}
                     <i>
-                      {renderTemplate(
-                        s.text,
-                        { name: "Pizzaria do Zé", city: "Curitiba", niche: "Pizzaria" } as Lead,
-                        me
-                      ) || "—"}
+                      {renderTemplate(s.text, { name: "Pizzaria do Zé", city: "Curitiba", niche: "Pizzaria", lang: activeLang } as Lead, me) || "—"}
                     </i>
                   </small>
                 </div>
@@ -639,7 +867,14 @@ export default function Home() {
               <span className="stat-icon green">💬</span>
               <div>
                 <b>{counts.wa}</b>
-                <span>com WhatsApp</span>
+                <span>com número</span>
+              </div>
+            </div>
+            <div className="stat">
+              <span className="stat-icon green">✅</span>
+              <div>
+                <b>{counts.waOk}</b>
+                <span>WhatsApp confirmado</span>
               </div>
             </div>
             <div className="stat">
@@ -673,12 +908,45 @@ export default function Home() {
                 </button>
               ))}
             </div>
-            {stageFilter !== "all" && (
-              <button className="btn btn-secondary btn-sm" onClick={() => setStageFilter("all")}>
-                ✕ Filtro: {funnel[stageFilter]?.name}
-              </button>
-            )}
+            <div className="row">
+              <select value={waFilter} onChange={(e) => setWaFilter(e.target.value as WaFilter)} style={{ width: "auto", padding: "8px 34px 8px 12px", fontSize: "0.88rem" }}>
+                <option value="todos">Telefone: todos</option>
+                <option value="com_numero">Só com número ({counts.wa})</option>
+                <option value="celular">Só celulares ({counts.celular})</option>
+                <option value="confirmado">Só WhatsApp confirmado ({counts.waOk})</option>
+              </select>
+              {stageFilter !== "all" && (
+                <button className="btn btn-secondary btn-sm" onClick={() => setStageFilter("all")}>
+                  ✕ Filtro: {funnel[stageFilter]?.name}
+                </button>
+              )}
+            </div>
           </div>
+          {counts.unverified > 0 && (
+            <div className={`alert ${canVerify ? "alert-info" : "alert-warn"}`}>
+              <span>
+                {counts.unverified} número{counts.unverified > 1 ? "s" : ""} ainda não verificado{counts.unverified > 1 ? "s" : ""} no WhatsApp.{" "}
+                {canVerify ? (
+                  <button className="btn btn-secondary btn-sm" onClick={() => verifyLeads(leads)} disabled={verifying || running} type="button">
+                    {verifying ? "Verificando…" : "Verificar agora"}
+                  </button>
+                ) : (
+                  <>
+                    Para confirmar quem tem WhatsApp,{" "}
+                    <button className="btn btn-secondary btn-sm" type="button" onClick={() => { setShowVerify(true); window.scrollTo({ top: 0, behavior: "smooth" }); }}>
+                      conecte um número
+                    </button>
+                    . Enquanto isso, prefira os <b>celulares</b> (quase sempre têm WhatsApp).
+                  </>
+                )}
+              </span>
+            </div>
+          )}
+          {counts.waNo > 0 && waFilter === "todos" && (
+            <p className="hint mt">
+              {counts.waNo} número{counts.waNo > 1 ? "s" : ""} sem WhatsApp aparece{counts.waNo > 1 ? "m" : ""} riscado{counts.waNo > 1 ? "s" : ""}; use o filtro para esconder.
+            </p>
+          )}
 
           <div className="table-wrap">
             <table>
@@ -697,7 +965,7 @@ export default function Home() {
                   <LeadRowView
                     key={l.id}
                     lead={l}
-                    funnel={funnel}
+                    funnel={funnelOf(l)}
                     me={me}
                     open={open === l.id}
                     onToggle={() => setOpen(open === l.id ? null : l.id)}
@@ -742,7 +1010,7 @@ function LeadRowView({
   const stageIdx = Math.min(l.stage ?? 0, funnel.length - 1);
   const stage = funnel[stageIdx];
   const text = stage ? renderTemplate(stage.text, l, me) : "";
-  const waLink = l.whatsapp ? (text ? `${l.whatsapp}?text=${encodeURIComponent(text)}` : l.whatsapp) : null;
+  const waLink = l.whatsapp && l.waStatus !== "nao_tem" ? (text ? `${l.whatsapp}?text=${encodeURIComponent(text)}` : l.whatsapp) : null;
   const isLast = stageIdx >= funnel.length - 1;
 
   const copy = async () => {
@@ -758,6 +1026,7 @@ function LeadRowView({
           <b>{l.name}</b>
           <span className="sub">
             {l.niche} · {l.city}
+            {l.countryCode && l.countryCode !== "BR" ? ` · ${l.countryCode} (${LANG_NAMES[baseLang(l.lang)] ?? baseLang(l.lang)})` : ""}
             {l.rating ? ` · ★ ${l.rating} (${l.ratingCount})` : ""}
           </span>
           <span className="sub">{l.address}</span>
@@ -768,7 +1037,19 @@ function LeadRowView({
           )}
         </td>
         <td>
-          {l.phoneE164 ? <span>{prettyPhone(l.phoneE164)}</span> : <span className="muted">{l.phoneRaw ? `sem WhatsApp (${l.phoneRaw})` : "não informado"}</span>}
+          {l.phoneE164 ? (
+            <>
+              <span style={l.waStatus === "nao_tem" ? { textDecoration: "line-through", opacity: 0.6 } : undefined}>{prettyPhone(l.phoneE164)}</span>
+              <div className="row" style={{ gap: 4, marginTop: 4 }}>
+                {l.waStatus === "confirmado" && <span className="badge badge-ok">WhatsApp ✓</span>}
+                {l.waStatus === "nao_tem" && <span className="badge badge-none">sem WhatsApp</span>}
+                {l.waStatus === "nao_verificado" && l.phoneType === "celular" && <span className="badge badge-site" title="Celular: quase sempre tem WhatsApp">celular</span>}
+                {l.waStatus === "nao_verificado" && l.phoneType === "fixo" && <span className="badge badge-social" title="Fixo: só tem WhatsApp se for Business">fixo</span>}
+              </div>
+            </>
+          ) : (
+            <span className="muted">{l.phoneRaw ? `sem WhatsApp (${l.phoneRaw})` : "não informado"}</span>
+          )}
         </td>
         <td>
           {l.instagram ? (

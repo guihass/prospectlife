@@ -1,6 +1,6 @@
 import type { Lead } from "./types";
 import { getCountry } from "./countries";
-import { normalizePhone } from "./phone";
+import { normalizePhone, phoneType } from "./phone";
 import { classifyWebsite, instagramHandleFromUrl } from "./social";
 
 interface GooglePlace {
@@ -107,12 +107,16 @@ export async function searchGoogle(opts: {
         instagram: igFromSite,
         instagramUrl: igFromSite ? `https://instagram.com/${igFromSite}` : null,
         instagramConfidence: igFromSite ? "fonte" : null,
+        phoneType: phoneType(phone?.e164 ?? null, country.dial),
+        waStatus: "nao_verificado",
         rating: p.rating ?? null,
         ratingCount: p.userRatingCount ?? null,
         mapsUrl: p.googleMapsUri ?? null,
         source: "google",
         city: opts.city,
         niche: opts.niche,
+        countryCode: country.code,
+        lang: country.lang,
       });
     }
 

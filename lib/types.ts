@@ -12,12 +12,16 @@ export interface Lead {
   instagram: string | null;     // @handle
   instagramUrl: string | null;
   instagramConfidence: "alta" | "media" | "fonte" | null;
+  phoneType: "celular" | "fixo" | "outro" | null;   // heurística gratuita (Brasil)
+  waStatus: "confirmado" | "nao_tem" | "nao_verificado"; // resultado da verificação real
   rating: number | null;
   ratingCount: number | null;
   mapsUrl: string | null;
   source: "google" | "osm";
   city: string;
   niche: string;
+  countryCode: string;   // "BR"
+  lang: string;          // "pt-BR", "es", "en"... (idioma das mensagens)
   audit?: SiteAudit | null;
 }
 
