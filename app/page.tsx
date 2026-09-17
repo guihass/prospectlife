@@ -294,7 +294,7 @@ export default function Home() {
       const need = found.filter((l) => !l.instagram);
       setProgress({ done: 0, total: need.length, label: "Procurando Instagram…" });
       let done = 0;
-      await pool(need, 3, async (l) => {
+      await pool(need, 2, async (l) => {
         if (ctrl.signal.aborted) return;
         try {
           const res = await fetch("/api/instagram", {

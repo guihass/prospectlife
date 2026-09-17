@@ -86,12 +86,29 @@ export function instagramHandleFromUrl(url: string | null | undefined): string |
 /** Acha todos os handles do Instagram num HTML qualquer. */
 export function extractInstagramHandles(html: string): string[] {
   const out: string[] = [];
-  const re = /instagram\.com\/([A-Za-z0-9_.]{2,30})/gi;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(html))) {
-    const h = m[1].replace(/\.+$/, "");
-    if (IG_RESERVED.has(h.toLowerCase())) continue;
+  const push = (raw: string) => {
+    const h = raw.replace(/\.+$/, "");
+    if (h.length < 2 || IG_RESERVED.has(h.toLowerCase())) return;
     if (!out.includes(h)) out.push(h);
+  };
+  // Links podem vir codificados dentro de redirecionadores (uddg=https%3A%2F%2Fwww.instagram.com%2Floja)
+  const text = html.replace(/%[0-9A-Fa-f]{2}/g, (x) => {
+    try {
+      return decodeURIComponent(x);
+    } catch {
+      return x;
+    }
+  });
+
+  const patterns: RegExp[] = [
+    /instagram\.com\/([A-Za-z0-9_.]{2,30})/gi, // instagram.com/loja
+    /\(@([A-Za-z0-9_.]{2,30})\)/g, // "Loja (@loja) • Instagram"
+    /comments? - ([A-Za-z0-9_.]{2,30}) on /gi, // "11 likes, 0 comments - loja on August..."
+    /(?:^|\s)@([A-Za-z0-9_.]{3,30})(?=[\s:,.)]|$)/g, // "@loja" solto no texto
+  ];
+  for (const re of patterns) {
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text))) push(m[1]);
   }
   return out;
 }

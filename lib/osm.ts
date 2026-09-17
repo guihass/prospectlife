@@ -166,6 +166,46 @@ async function geocodeCity(city: string, countryCode: string): Promise<Nominatim
   return data[0] ?? null;
 }
 
+// Vários espelhos públicos do Overpass: se um estiver sobrecarregado, tenta o próximo.
+const OVERPASS_MIRRORS = [
+  "https://overpass-api.de/api/interpreter",
+  "https://overpass.kumi.systems/api/interpreter",
+  "https://overpass.private.coffee/api/interpreter",
+  "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+];
+
+async function overpass(query: string): Promise<{ elements?: OverpassElement[] }> {
+  let lastErr = "";
+  for (const url of OVERPASS_MIRRORS) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 45000);
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": UA },
+        body: "data=" + encodeURIComponent(query),
+        cache: "no-store",
+        signal: ctrl.signal,
+      });
+      if (!res.ok) {
+        lastErr = `HTTP ${res.status}`;
+        continue;
+      }
+      const json = (await res.json()) as { elements?: OverpassElement[]; remark?: string };
+      if (json.remark && /timed out|error/i.test(json.remark) && !json.elements?.length) {
+        lastErr = json.remark;
+        continue;
+      }
+      return json;
+    } catch (e) {
+      lastErr = e instanceof Error ? e.message : "erro";
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw new Error(`OpenStreetMap (Overpass) indisponível no momento (${lastErr}). Tente novamente em alguns segundos ou use o modo Google.`);
+}
+
 interface OverpassElement {
   type: string;
   id: number;
@@ -209,16 +249,7 @@ export async function searchOSM(opts: {
 
   const query = `[out:json][timeout:40];(${parts.join("")});out center tags 300;`;
 
-  const res = await fetch("https://overpass-api.de/api/interpreter", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": UA },
-    body: "data=" + encodeURIComponent(query),
-    cache: "no-store",
-  });
-  if (!res.ok) {
-    throw new Error(`OpenStreetMap (Overpass) indisponível no momento (HTTP ${res.status}). Tente novamente em alguns segundos.`);
-  }
-  const data = (await res.json()) as { elements?: OverpassElement[] };
+  const data = await overpass(query);
   const elements = data.elements ?? [];
 
   const leads: Lead[] = [];
